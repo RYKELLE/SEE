@@ -1,3 +1,4 @@
+# Load necessary libraries
 library(AdhereR)
 library(dplyr)
 library(plyr)
@@ -7,144 +8,152 @@ library(data.table)
 library(factoextra)
 library(stats)
 
+# Prepare the dataset
 ExamplePats <- med.events
-tidy <- ExamplePats
-colnames(tidy) <- c("pnr", "eksd", "perday", "ATC", "dur_original")
-tidy$eksd <- mdy(tidy$eksd)
+tidy_data <- ExamplePats
+colnames(tidy_data) <- c("patient_id", "event_date", "dose_per_day", "ATC_code", "original_duration")
+tidy_data$event_date <- mdy(tidy_data$event_date)
 
-arg1="medA"
-See<- function(arg1){
-  C09CA01 <- tidy[which(tidy$ATC == arg1),]
-  # Take a random sequence of consecutive prescription in the dataset
-  Drug_see_p0 = C09CA01
-  Drug_see_p1 <- C09CA01
-  Drug_see_p1 <- Drug_see_p1 %>% arrange(pnr,eksd) %>% 
-    group_by(pnr) %>%  
-    dplyr::mutate(prev_eksd = dplyr::lag(eksd, n=1, default =NA))
-  Drug_see_p1 <- Drug_see_p1[!(is.na(Drug_see_p1$prev_eksd)),]
-  Drug_see_p1 <- ddply(Drug_see_p1,.(pnr), function(x) x[sample(nrow(x),1),])
-  Drug_see_p1 <- Drug_see_p1[,c("pnr","eksd","prev_eksd")] # only use the needed columns
-  Drug_see_p1$event.interval <- Drug_see_p1$eksd - Drug_see_p1$prev_eksd # this is the date duration
-  Drug_see_p1$event.interval <-as.numeric( Drug_see_p1$event.interval)
-  per <- ecdfplot(~Drug_see_p1$event.interval) #. Generate the empirical cumulative  distribution plot
-  x <- per$panel.args[[1]]
-  ecdfs <- lapply(split(Drug_see_p1$event.interval,1),ecdf) # generating difference "cuts" of the original empirical cumulative distributions
-  y <- sapply(ecdfs, function(e) e(Drug_see_p1$event.interval))
-  y <- as.vector(y)
-  x = unlist(x)
-  x = as.numeric(x)
-  dfper <- cbind(x,y)
-  dfper<-as.data.frame(dfper)
+# Function to analyze medication events
+analyze_medication <- function(medication_code) {
+  # Filter data for the specified medication
+  medication_data <- tidy_data %>% filter(ATC_code == medication_code)
   
-  # Retain the 20% of the ECDF
-  dfper <- dfper[which(dfper$y<=0.8),] # Remove the upper 20%? Should this be >=0.8?
-  max(dfper$x)
-  par(mfrow=c(1,2))
-  plot(dfper$x, dfper$y, main = "80% ECDF") # Oh that’s why its <=0.8
-  plot(x,y, main="100% ECDF")
-  m1<-table(Drug_see_p1$pnr)
-  plot(m1)
-  ni<-max(dfper$x)
-  Drug_see_p2<- Drug1_see_p1[which(Drug_see_p1$event.interval<=ni),]
-  d<-density(log(as.numeric(Drug_see_p2$event.interval)))
-  plot(d, main="Log(event interval)")
-  x1<- d$x
-  y1<-d$y
-  z1<-max(x1)
-  a<-data.table(x=x1,y=y1)
-  a<-scale(a)
+  # Arrange and group data by patient and event date
+  processed_data <- medication_data %>%
+    arrange(patient_id, event_date) %>%
+    group_by(patient_id) %>%
+    mutate(previous_event_date = lag(event_date, default = NA))
   
-  # Silhouette Score
-  set.seed(1234) # for reproducibility
-  a2<- fviz_nbclust(a, kmeans, method = "silhouette") + labs (subtitle="Silhouette Analysis")
-  plot(a2)
-  max_cluster <- a2$data
-  max_cluster <- as.numeric(max_cluster$clusters[which.max(max_cluster$y)])
+  # Remove rows with NA in previous_event_date
+  processed_data <- processed_data %>% filter(!is.na(previous_event_date))
   
-  # K-means Clustering
+  # Sample one random row per patient
+  sampled_data <- ddply(processed_data, .(patient_id), function(x) x[sample(nrow(x), 1),])
+  sampled_data <- sampled_data %>% select(patient_id, event_date, previous_event_date)
+  
+  # Calculate event intervals
+  sampled_data$event_interval <- as.numeric(sampled_data$event_date - sampled_data$previous_event_date)
+  
+  # Generate ECDF plot
+  ecdf_plot <- ecdfplot(~sampled_data$event_interval)
+  ecdf_values <- ecdf_plot$panel.args[[1]]
+  ecdf_functions <- lapply(split(sampled_data$event_interval, 1), ecdf)
+  ecdf_results <- sapply(ecdf_functions, function(e) e(sampled_data$event_interval))
+  ecdf_results <- as.vector(ecdf_results)
+  ecdf_values <- unlist(ecdf_values)
+  ecdf_values <- as.numeric(ecdf_values)
+  
+  # Create a data frame for ECDF results
+  ecdf_df <- data.frame(x = ecdf_values, y = ecdf_results)
+  
+  # Retain the lower 80% of the ECDF
+  ecdf_df <- ecdf_df %>% filter(y <= 0.8)
+  
+  # Plot ECDFs
+  par(mfrow = c(1, 2))
+  plot(ecdf_df$x, ecdf_df$y, main = "80% ECDF")
+  plot(ecdf_values, ecdf_results, main = "100% ECDF")
+  
+  # Calculate maximum interval in the 80% ECDF
+  max_interval <- max(ecdf_df$x)
+  
+  # Filter data based on the maximum interval
+  filtered_data <- sampled_data %>% filter(event_interval <= max_interval)
+  
+  # Density plot of log-transformed event intervals
+  density_plot <- density(log(filtered_data$event_interval))
+  plot(density_plot, main = "Log(event interval)")
+  
+  # Prepare data for clustering
+  scaled_data <- scale(data.table(x = density_plot$x, y = density_plot$y))
+  
+  # Silhouette analysis to determine optimal clusters
   set.seed(1234)
-  cluster<-kmeans(dfper$x, max_cluster)
-  dfper$cluster<-as.numeric(cluster$cluster)
-  tapply(log(dfper$x), dfper$cluster, summary)
-  ni2<-tapply(log(dfper$x), dfper$cluster, min)
-  ni3<-tapply(log(dfper$x), dfper$cluster, max) 
-  ni2<-data.frame(Cluster=names(ni2), Results=unname(ni2))
-  ni2$Results<-ifelse(is.infinite(ni2$Results) & ni2$Results<0, 0,ni2$Results)
-  ni3<-data.frame(Cluster=names(ni3), Results=unname(ni3))
-  ni3$Results<-as.numeric(ni3$Results)
-  nif<-cbind(ni2,ni3)
-  nif<-nif[,-3] 
-  nif$Results<-exp(nif$Results) # Perform normal exponential since this was logged
-  nif$Results.1<-exp(nif$Results.1)
-  ni4<-tapply(log(dfper$x), dfper$cluster, median, na.rm=T)
-  ni4<-data.frame(Cluster=names(ni4), Results=unname(ni4))
-  nif<-merge(nif, ni4, by="Cluster")
-  colnames(nif)<-c("Cluster","Minimum","Maximum","Median")
-  nif$Median<- ifelse(is.infinite(nif$Median) & nif$Median<0, 0, nif$Median)
-  nif<- nif[which(nif$Median>0),]
-  results<-Drug1_see_p1 %>% cross_join(nif) %>% mutate(Final_cluster = ifelse(event.interval>=Minimum & event.interval<= Maximum, Cluster, NA))
-  results = results[which(!is.na(results$Final_cluster)),]
-  results$Median<-exp(results$Median)
-  results<-results[,c("pnr","Median","Cluster")]
-  t1<-as.data.frame(table(results$Cluster))
-  t1<-t1%>%arrange(-Freq)
-  t1<-as.numeric(t1$Var1[1])
-  t1<-as.data.frame(t1)
-  colnames(t1)<-"Cluster"
-  t1
-  t1$Cluster <- as.numeric(t1$Cluster)
-  results$Cluster <- as.numeric(results$Cluster)
-  t1_merged = merge(t1,results, by="Cluster")
-  t1_merged = t1_merged [1,]
-  t1_merged <- t1_merged[,-2]
-  t1 = t1_merged
-  Drug_see_p1<-merge(Drug_see_p1, results, by = "pnr", all.x=T)
-  Drug_see_p1$Median<-ifelse(is.na(Drug_see_p1$Median), t1$Median,Drug_see_p1$Median)
-  Drug_see_p1$Cluster<-ifelse(is.na(Drug_see_p1$Cluster), "0", Drug_see_p1$Cluster)
-  Drug_see_p1$event.interval<-as.numeric(Drug_see_p1$event.interval)
-  Drug_see_p1$test<-round(Drug_see_p1$event.interval-Drug_see_p1$Median,1)
+  silhouette_plot <- fviz_nbclust(scaled_data, kmeans, method = "silhouette") + labs(subtitle = "Silhouette Analysis")
+  plot(silhouette_plot)
   
-  Drug_see_p3<-Drug_see_p1[,c("pnr","Median","Cluster")]
+  # Determine the optimal number of clusters
+  optimal_clusters <- as.numeric(silhouette_plot$data$clusters[which.max(silhouette_plot$data$y)])
   
-  # Assign Duration
-  Drug_see_p0<-merge(Drug_see_p0, Drug_see_p3, by="pnr", all.x=T)
-  Drug_see_p0$Median<-as.numeric(Drug_see_p0$Median)
-  Drug_see_p0$Median<-ifelse(is.na(Drug_see_p0$Median), t1$Median,Drug_see_p0$Median)
-  Drug_see_p0$Cluster<-ifelse(is.na(Drug_see_p0$Cluster),0,Drug_see_p0$Cluster)
+  # Perform K-means clustering
+  set.seed(1234)
+  kmeans_result <- kmeans(ecdf_df$x, optimal_clusters)
+  ecdf_df$cluster <- as.numeric(kmeans_result$cluster)
   
-  return(Drug_see_p0)
+  # Summarize cluster results
+  cluster_summary <- data.frame(
+    Cluster = names(tapply(log(ecdf_df$x), ecdf_df$cluster, min)),
+    Minimum = exp(tapply(log(ecdf_df$x), ecdf_df$cluster, min)),
+    Maximum = exp(tapply(log(ecdf_df$x), ecdf_df$cluster, max)),
+    Median = exp(tapply(log(ecdf_df$x), ecdf_df$cluster, median, na.rm = TRUE))
+  )
+  
+  # Merge cluster results with the original data
+  final_results <- sampled_data %>%
+    cross_join(cluster_summary) %>%
+    mutate(Final_cluster = ifelse(event_interval >= Minimum & event_interval <= Maximum, Cluster, NA))
+  
+  final_results <- final_results %>% filter(!is.na(Final_cluster))
+  final_results <- final_results %>% select(patient_id, Median, Cluster)
+  
+  # Determine the most frequent cluster
+  most_frequent_cluster <- as.data.frame(table(final_results$Cluster)) %>%
+    arrange(desc(Freq)) %>%
+    slice(1) %>%
+    select(Var1) %>%
+    rename(Cluster = Var1)
+  
+  # Merge most frequent cluster with final results
+  final_results <- merge(most_frequent_cluster, final_results, by = "Cluster")
+  final_results <- final_results %>% slice(1) %>% select(-Cluster)
+  
+  # Assign median and cluster to the original data
+  processed_data <- merge(processed_data, final_results, by = "patient_id", all.x = TRUE)
+  processed_data$Median <- ifelse(is.na(processed_data$Median), final_results$Median, processed_data$Median)
+  processed_data$Cluster <- ifelse(is.na(processed_data$Cluster), "0", processed_data$Cluster)
+  processed_data$event_interval <- as.numeric(processed_data$event_interval)
+  processed_data$test <- round(processed_data$event_interval - processed_data$Median, 1)
+  
+  # Return the processed data
+  return(processed_data)
 }
 
-arg1=medA
-
-see_assumption<-function(arg1){
-  arg1 <- arg1 %>% arrange(pnr,eksd) %>% 
-    group_by(pnr) %>%  
-    dplyr::mutate(prev_eksd = dplyr::lag(eksd, n=1, default =NA))
-  Drug_see2<- arg1 %>% # Replace here
-    group_by(pnr) %>%
-    arrange(pnr, eksd) %>% dplyr :: mutate(p_number=seq_along(eksd))
-  Drug_see2 <- Drug_see2[which(Drug_see2$p_number>=2),]
-  Drug_see2 <-Drug_see2[,c("pnr","eksd","prev_eksd","p_number")]
-  Drug_see2$Duration <-Drug_see2$eksd-Drug_see2$prev_eksd
-  Drug_see2$p_number <- as.factor(Drug_see2$p_number)
-  pp <- ggplot(Drug_see2, aes(x=p_number, y=Duration)) + geom_boxplot() + theme_bw()
- 
-  medians_of_medians <- Drug_see2 %>%
-    group_by(pnr) %>%
+# Function to visualize medication assumptions
+visualize_assumptions <- function(medication_data) {
+  medication_data <- medication_data %>%
+    arrange(patient_id, event_date) %>%
+    group_by(patient_id) %>%
+    mutate(previous_event_date = lag(event_date, default = NA))
+  
+  medication_data <- medication_data %>%
+    group_by(patient_id) %>%
+    arrange(patient_id, event_date) %>%
+    mutate(prescription_number = seq_along(event_date))
+  
+  medication_data <- medication_data %>% filter(prescription_number >= 2)
+  medication_data <- medication_data %>% select(patient_id, event_date, previous_event_date, prescription_number)
+  medication_data$Duration <- as.numeric(medication_data$event_date - medication_data$previous_event_date)
+  medication_data$prescription_number <- as.factor(medication_data$prescription_number)
+  
+  # Calculate median duration per patient
+  median_durations <- medication_data %>%
+    group_by(patient_id) %>%
     summarise(median_duration = median(Duration, na.rm = TRUE))
   
-  pp <- ggplot(Drug_see2, aes(x=p_number, y=Duration)) + geom_boxplot() + 
-    geom_hline(yintercept = as.numeric(medians_of_medians$median_duration), linetype = "dashed", color = "red") +  # Horizontal line
-    theme_bw() 
-  return(pp)
+  # Plot boxplot with median durations
+  plot <- ggplot(medication_data, aes(x = prescription_number, y = Duration)) +
+    geom_boxplot() +
+    geom_hline(yintercept = median_durations$median_duration, linetype = "dashed", color = "red") +
+    theme_bw()
+  
+  return(plot)
 }
 
+# Analyze medications
+medA_data <- analyze_medication("medA")
+medB_data <- analyze_medication("medB")
 
- 
-
-medA = See("medA")
-medB = See("medB")
-
-see_assumption(medA)
-see_assumption(medB)
+# Visualize assumptions
+visualize_assumptions(medA_data)
+visualize_assumptions(medB_data)
